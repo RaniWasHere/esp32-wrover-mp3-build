@@ -7,37 +7,43 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # We run the whole job inside the official Espressif Builder container.
+    # This comes pre-loaded with all the tools (ESP-IDF v5.0.4), so we don't need to "setup" anything.
+    container: espressif/idf:v5.0.4
+
     steps:
-      - uses: actions/checkout@v4  # Updated to v4
+      - name: Install Build Dependencies
+        # The container is minimal, so we need to ensure 'git' and 'make' tools are ready
+        run: |
+          apt-get update
+          apt-get install -y git make cmake python3 libffi-dev pkg-config
+
+      - name: Checkout Your Repository
+        uses: actions/checkout@v4
         with:
           path: my_project
 
       - name: Checkout MicroPython
-        uses: actions/checkout@v4  # Updated to v4
+        uses: actions/checkout@v4
         with:
           repository: micropython/micropython
           path: micropython
           ref: v1.22.2
 
-      - name: Setup ESP-IDF
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: v5.0.4
-          target: esp32
-
       - name: Build mpy-cross
+        # This compiles the MicroPython cross-compiler, a required step
         run: |
           cd micropython/mpy-cross
           make
 
       - name: Build Firmware
+        # We use $GITHUB_WORKSPACE to get the absolute path to your module, preventing "file not found" errors
         run: |
           cd micropython/ports/esp32
-          # Build for Generic ESP32 but with SPIRAM (Wrover) enabled
-          make BOARD=ESP32_GENERIC BOARD_VARIANT=SPIRAM USER_C_MODULES=../../../my_project/modules/mp3dec/micropython.cmake
+          make BOARD=ESP32_GENERIC BOARD_VARIANT=SPIRAM USER_C_MODULES="$GITHUB_WORKSPACE/my_project/modules/mp3dec/micropython.cmake"
 
       - name: Upload Firmware
-        uses: actions/upload-artifact@v4  # Updated to v4 (This fixes your error)
+        uses: actions/upload-artifact@v4
         with:
           name: firmware
           path: micropython/ports/esp32/build-ESP32_GENERIC-SPIRAM/firmware.bin

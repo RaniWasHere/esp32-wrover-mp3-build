@@ -7,16 +7,14 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # We run the whole job inside the official Espressif Builder container.
-    # This comes pre-loaded with all the tools (ESP-IDF v5.0.4), so we don't need to "setup" anything.
     container: espressif/idf:v5.0.4
 
     steps:
       - name: Install Build Dependencies
-        # The container is minimal, so we need to ensure 'git' and 'make' tools are ready
+        # DEBIAN_FRONTEND=noninteractive tells apt-get not to ask questions
         run: |
           apt-get update
-          apt-get install -y git make cmake python3 libffi-dev pkg-config
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git make cmake python3 libffi-dev pkg-config
 
       - name: Checkout Your Repository
         uses: actions/checkout@v4
@@ -31,15 +29,14 @@ jobs:
           ref: v1.22.2
 
       - name: Build mpy-cross
-        # This compiles the MicroPython cross-compiler, a required step
         run: |
           cd micropython/mpy-cross
           make
 
       - name: Build Firmware
-        # We use $GITHUB_WORKSPACE to get the absolute path to your module, preventing "file not found" errors
         run: |
           cd micropython/ports/esp32
+          # We use $GITHUB_WORKSPACE to ensure the path is absolute and correct
           make BOARD=ESP32_GENERIC BOARD_VARIANT=SPIRAM USER_C_MODULES="$GITHUB_WORKSPACE/my_project/modules/mp3dec/micropython.cmake"
 
       - name: Upload Firmware

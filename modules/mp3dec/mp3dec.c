@@ -3,8 +3,9 @@
 #include "py/runtime.h"
 #include "py/objstr.h"
 #include "py/stream.h"
+#include <string.h> // Required for memmove
 
-// Decoder state
+// Decoder state structure
 typedef struct _mp3dec_obj_t {
     mp_obj_base_t base;
     mp3dec_t mp3d;
@@ -17,7 +18,7 @@ typedef struct _mp3dec_obj_t {
 
 const mp_obj_type_t mp3dec_type;
 
-// Constructor: MP3Decoder(file_stream)
+// --- Constructor: MP3Decoder(file_stream) ---
 STATIC mp_obj_t mp3dec_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
     mp_arg_check_num(n_args, n_kw, 1, 1, false);
     mp3dec_obj_t *self = m_new_obj(mp3dec_obj_t);
@@ -26,8 +27,7 @@ STATIC mp_obj_t mp3dec_make_new(const mp_obj_type_t *type, size_t n_args, size_t
     mp3dec_init(&self->mp3d);
     self->stream = args[0];
     
-    // Allocate a small buffer for reading the MP3 file chunks
-    // MP3 frames are rarely larger than 2KB, so 4KB is safe
+    // Allocate buffer for reading MP3 file chunks (4KB is safe for MP3 frames)
     self->file_buf_size = 4096;
     self->file_buf = m_new(uint8_t, self->file_buf_size);
     self->buf_valid = 0;
@@ -35,22 +35,20 @@ STATIC mp_obj_t mp3dec_make_new(const mp_obj_type_t *type, size_t n_args, size_t
     return MP_OBJ_FROM_PTR(self);
 }
 
-// Method: decode(output_buffer) -> bytes_written
+// --- Method: decode(output_buffer) -> bytes_written ---
 STATIC mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     
     mp_buffer_info_t bufinfo;
     mp_get_buffer_raise(out_buf_in, &bufinfo, MP_BUFFER_WRITE);
     short * pcm = (short *)bufinfo.buf;
-    size_t max_samples = bufinfo.len / 2; // 16-bit samples
 
-    // Read more data from file if we are running low
+    // Read more data from file if we are running low (<1KB)
     if (self->buf_valid < 1024) {
-        // Move remaining data to start
+        // Move remaining data to start of buffer
         memmove(self->file_buf, self->file_buf + (self->file_buf_size - self->buf_valid), self->buf_valid);
         
         // Read from stream
-        int err;
         mp_obj_t read_method[2] = {
             mp_load_attr(self->stream, MP_QSTR_readinto), 
             mp_obj_new_bytearray_by_ref(self->file_buf_size - self->buf_valid, self->file_buf + self->buf_valid)
@@ -71,12 +69,20 @@ STATIC mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
 
     return MP_OBJ_NEW_SMALL_INT(samples * self->info.channels * 2); // Return bytes written
 }
+// THIS WAS MISSING: The wrapper that creates 'mp3dec_decode_obj'
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_decode_obj, mp3dec_decode);
 
-// Method: get_sample_rate()
+
+// --- Method: get_sample_rate() ---
 STATIC mp_obj_t mp3dec_get_sample_rate(mp_obj_t self_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     return MP_OBJ_NEW_SMALL_INT(self->info.hz);
 }
+// THIS WAS MISSING: The wrapper that creates 'mp3dec_get_sample_rate_obj'
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_sample_rate_obj, mp3dec_get_sample_rate);
+
+
+// --- Module Definitions ---
 
 STATIC const mp_rom_map_elem_t mp3dec_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_decode), MP_ROM_PTR(&mp3dec_decode_obj) },

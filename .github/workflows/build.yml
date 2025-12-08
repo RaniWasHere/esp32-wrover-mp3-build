@@ -11,8 +11,6 @@ jobs:
 
     steps:
       - name: Install Build Dependencies
-        # 1. Install tools silently
-        # 2. Fix git safety issue (common in containers)
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y git make cmake python3 libffi-dev pkg-config
@@ -38,12 +36,15 @@ jobs:
       - name: Build Firmware
         shell: bash
         run: |
-          # THIS IS THE FIX: Load the ESP-IDF tools into the path
+          # 1. Activate ESP-IDF tools
           . $IDF_PATH/export.sh
           
           cd micropython/ports/esp32
           
-          # Now build, using the absolute path to your module
+          # 2. Download external dependencies (Fixes the btree/berkeley-db error)
+          make BOARD=ESP32_GENERIC BOARD_VARIANT=SPIRAM submodules
+          
+          # 3. Build the firmware with your MP3 module
           make BOARD=ESP32_GENERIC BOARD_VARIANT=SPIRAM USER_C_MODULES="$GITHUB_WORKSPACE/my_project/modules/mp3dec/micropython.cmake"
 
       - name: Upload Firmware

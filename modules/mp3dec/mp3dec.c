@@ -3,7 +3,7 @@
 #include "py/runtime.h"
 #include "py/objstr.h"
 #include "py/stream.h"
-#include <string.h> // Required for memmove
+#include <string.h>
 
 // Decoder state structure
 typedef struct _mp3dec_obj_t {
@@ -19,7 +19,8 @@ typedef struct _mp3dec_obj_t {
 const mp_obj_type_t mp3dec_type;
 
 // --- Constructor: MP3Decoder(file_stream) ---
-STATIC mp_obj_t mp3dec_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+// CHANGED: STATIC -> static
+static mp_obj_t mp3dec_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
     mp_arg_check_num(n_args, n_kw, 1, 1, false);
     mp3dec_obj_t *self = m_new_obj(mp3dec_obj_t);
     self->base.type = &mp3dec_type;
@@ -27,7 +28,7 @@ STATIC mp_obj_t mp3dec_make_new(const mp_obj_type_t *type, size_t n_args, size_t
     mp3dec_init(&self->mp3d);
     self->stream = args[0];
     
-    // Allocate buffer for reading MP3 file chunks (4KB is safe for MP3 frames)
+    // Allocate buffer for reading MP3 file chunks
     self->file_buf_size = 4096;
     self->file_buf = m_new(uint8_t, self->file_buf_size);
     self->buf_valid = 0;
@@ -36,7 +37,8 @@ STATIC mp_obj_t mp3dec_make_new(const mp_obj_type_t *type, size_t n_args, size_t
 }
 
 // --- Method: decode(output_buffer) -> bytes_written ---
-STATIC mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
+// CHANGED: STATIC -> static
+static mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     
     mp_buffer_info_t bufinfo;
@@ -69,26 +71,33 @@ STATIC mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
 
     return MP_OBJ_NEW_SMALL_INT(samples * self->info.channels * 2); // Return bytes written
 }
-// THIS WAS MISSING: The wrapper that creates 'mp3dec_decode_obj'
-STATIC MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_decode_obj, mp3dec_decode);
+
+// Wrapper for decode
+// CHANGED: STATIC -> static
+static MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_decode_obj, mp3dec_decode);
 
 
 // --- Method: get_sample_rate() ---
-STATIC mp_obj_t mp3dec_get_sample_rate(mp_obj_t self_in) {
+// CHANGED: STATIC -> static
+static mp_obj_t mp3dec_get_sample_rate(mp_obj_t self_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     return MP_OBJ_NEW_SMALL_INT(self->info.hz);
 }
-// THIS WAS MISSING: The wrapper that creates 'mp3dec_get_sample_rate_obj'
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_sample_rate_obj, mp3dec_get_sample_rate);
+
+// Wrapper for get_sample_rate
+// CHANGED: STATIC -> static
+static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_sample_rate_obj, mp3dec_get_sample_rate);
 
 
 // --- Module Definitions ---
 
-STATIC const mp_rom_map_elem_t mp3dec_locals_dict_table[] = {
+// CHANGED: STATIC -> static
+static const mp_rom_map_elem_t mp3dec_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_decode), MP_ROM_PTR(&mp3dec_decode_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_sample_rate), MP_ROM_PTR(&mp3dec_get_sample_rate_obj) },
 };
-STATIC MP_DEFINE_CONST_DICT(mp3dec_locals_dict, mp3dec_locals_dict_table);
+// CHANGED: STATIC -> static
+static MP_DEFINE_CONST_DICT(mp3dec_locals_dict, mp3dec_locals_dict_table);
 
 MP_DEFINE_CONST_OBJ_TYPE(
     mp3dec_type,
@@ -98,11 +107,13 @@ MP_DEFINE_CONST_OBJ_TYPE(
     locals_dict, &mp3dec_locals_dict
 );
 
-STATIC const mp_rom_map_elem_t mp3dec_globals_table[] = {
+// CHANGED: STATIC -> static
+static const mp_rom_map_elem_t mp3dec_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_mp3dec) },
     { MP_ROM_QSTR(MP_QSTR_MP3Decoder), MP_ROM_PTR(&mp3dec_type) },
 };
-STATIC MP_DEFINE_CONST_DICT(mp3dec_globals, mp3dec_globals_table);
+// CHANGED: STATIC -> static
+static MP_DEFINE_CONST_DICT(mp3dec_globals, mp3dec_globals_table);
 
 const mp_obj_module_t mp3dec_cmodule = {
     .base = { &mp_type_module },

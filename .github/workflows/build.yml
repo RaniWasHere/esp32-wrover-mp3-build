@@ -1,0 +1,43 @@
+name: Build ESP32 Wrover MP3 Firmware
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          path: my_project
+
+      - name: Checkout MicroPython
+        uses: actions/checkout@v3
+        with:
+          repository: micropython/micropython
+          path: micropython
+          ref: v1.22.2  # Use a stable version
+
+      - name: Setup ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.0.4
+          target: esp32
+
+      - name: Build mpy-cross
+        run: |
+          cd micropython/mpy-cross
+          make
+
+      - name: Build Firmware
+        run: |
+          cd micropython/ports/esp32
+          # We build for ESP32_GENERIC but force SPIRAM support for Wrover
+          make BOARD=ESP32_GENERIC BOARD_VARIANT=SPIRAM USER_C_MODULES=../../../my_project/modules/mp3dec/micropython.cmake
+
+      - name: Upload Firmware
+        uses: actions/upload-artifact@v3
+        with:
+          name: firmware
+          path: micropython/ports/esp32/build-ESP32_GENERIC-SPIRAM/firmware.bin

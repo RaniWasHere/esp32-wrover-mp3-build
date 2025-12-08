@@ -11,10 +11,12 @@ jobs:
 
     steps:
       - name: Install Build Dependencies
-        # DEBIAN_FRONTEND=noninteractive tells apt-get not to ask questions
+        # 1. Install tools silently
+        # 2. Fix git safety issue (common in containers)
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y git make cmake python3 libffi-dev pkg-config
+          git config --global --add safe.directory '*'
 
       - name: Checkout Your Repository
         uses: actions/checkout@v4
@@ -34,9 +36,14 @@ jobs:
           make
 
       - name: Build Firmware
+        shell: bash
         run: |
+          # THIS IS THE FIX: Load the ESP-IDF tools into the path
+          . $IDF_PATH/export.sh
+          
           cd micropython/ports/esp32
-          # We use $GITHUB_WORKSPACE to ensure the path is absolute and correct
+          
+          # Now build, using the absolute path to your module
           make BOARD=ESP32_GENERIC BOARD_VARIANT=SPIRAM USER_C_MODULES="$GITHUB_WORKSPACE/my_project/modules/mp3dec/micropython.cmake"
 
       - name: Upload Firmware

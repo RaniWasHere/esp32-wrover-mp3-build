@@ -8,16 +8,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4  # Updated to v4
         with:
           path: my_project
 
       - name: Checkout MicroPython
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4  # Updated to v4
         with:
           repository: micropython/micropython
           path: micropython
-          ref: v1.22.2  # Use a stable version
+          ref: v1.22.2
 
       - name: Setup ESP-IDF
         uses: espressif/esp-idf-ci-action@v1
@@ -33,11 +33,11 @@ jobs:
       - name: Build Firmware
         run: |
           cd micropython/ports/esp32
-          # We build for ESP32_GENERIC but force SPIRAM support for Wrover
+          # Build for Generic ESP32 but with SPIRAM (Wrover) enabled
           make BOARD=ESP32_GENERIC BOARD_VARIANT=SPIRAM USER_C_MODULES=../../../my_project/modules/mp3dec/micropython.cmake
 
       - name: Upload Firmware
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4  # Updated to v4 (This fixes your error)
         with:
           name: firmware
           path: micropython/ports/esp32/build-ESP32_GENERIC-SPIRAM/firmware.bin

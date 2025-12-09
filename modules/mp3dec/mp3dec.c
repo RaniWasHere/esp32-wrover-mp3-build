@@ -13,7 +13,7 @@ typedef struct _mp3dec_obj_t {
     uint8_t *file_buf;    
     size_t file_buf_size;
     size_t buf_valid;
-    int volume;           // NEW: Volume level (0-100)
+    int volume;
 } mp3dec_obj_t;
 
 const mp_obj_type_t mp3dec_type;
@@ -30,12 +30,12 @@ static mp_obj_t mp3dec_make_new(const mp_obj_type_t *type, size_t n_args, size_t
     self->file_buf_size = 8192;
     self->file_buf = m_new(uint8_t, self->file_buf_size);
     self->buf_valid = 0;
-    self->volume = 100;   // NEW: Default to max volume
+    self->volume = 100;
 
     return MP_OBJ_FROM_PTR(self);
 }
 
-// --- Method: decode(output_buffer) ---
+// --- Method: decode ---
 static mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     
@@ -44,7 +44,6 @@ static mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
     short * pcm = (short *)bufinfo.buf;
 
     while (1) {
-        // 1. Refill Buffer logic
         if (self->buf_valid < self->file_buf_size - 512) {
             size_t bytes_to_read = self->file_buf_size - self->buf_valid;
             if (self->buf_valid > 0) {
@@ -60,7 +59,6 @@ static mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
             if (bytes_read == 0 && self->buf_valid == 0) return MP_OBJ_NEW_SMALL_INT(0); 
         }
 
-        // 2. Decode
         int samples = mp3dec_decode_frame(&self->mp3d, self->file_buf, self->buf_valid, pcm, &self->info);
         
         size_t consumed = self->info.frame_bytes;
@@ -68,12 +66,10 @@ static mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
         memmove(self->file_buf, self->file_buf + consumed, self->buf_valid);
 
         if (samples > 0) {
-            // NEW: Apply Volume Scaling if needed
+            // Apply Volume
             if (self->volume < 100) {
                 int total_samples = samples * self->info.channels;
                 for (int i = 0; i < total_samples; i++) {
-                    // Simple integer math: (sample * volume) / 100
-                    // We use 32-bit int cast to prevent overflow during multiplication
                     int32_t val = (int32_t)pcm[i] * self->volume / 100;
                     pcm[i] = (short)val;
                 }
@@ -84,34 +80,48 @@ static mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_decode_obj, mp3dec_decode);
 
-// --- NEW Method: set_volume(0-100) ---
+// --- Volume Control ---
 static mp_obj_t mp3dec_set_volume(mp_obj_t self_in, mp_obj_t vol_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     int vol = mp_obj_get_int(vol_in);
-    
-    // Clamp values between 0 and 100
     if (vol < 0) vol = 0;
     if (vol > 100) vol = 100;
-    
     self->volume = vol;
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_set_volume_obj, mp3dec_set_volume);
 
+// --- METADATA GETTERS ---
 
-// --- Method: get_sample_rate() ---
+// 1. Get Hz
 static mp_obj_t mp3dec_get_sample_rate(mp_obj_t self_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     return MP_OBJ_NEW_SMALL_INT(self->info.hz);
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_sample_rate_obj, mp3dec_get_sample_rate);
 
+// 2. Get Bitrate (kbps) - NEW!
+static mp_obj_t mp3dec_get_bitrate(mp_obj_t self_in) {
+    mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    return MP_OBJ_NEW_SMALL_INT(self->info.bitrate_kbps);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_bitrate_obj, mp3dec_get_bitrate);
+
+// 3. Get Channels - NEW!
+static mp_obj_t mp3dec_get_channels(mp_obj_t self_in) {
+    mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    return MP_OBJ_NEW_SMALL_INT(self->info.channels);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_channels_obj, mp3dec_get_channels);
+
 
 // --- Module Definitions ---
 static const mp_rom_map_elem_t mp3dec_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_decode), MP_ROM_PTR(&mp3dec_decode_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_volume), MP_ROM_PTR(&mp3dec_set_volume_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_sample_rate), MP_ROM_PTR(&mp3dec_get_sample_rate_obj) },
-    { MP_ROM_QSTR(MP_QSTR_set_volume), MP_ROM_PTR(&mp3dec_set_volume_obj) }, // Add to list
+    { MP_ROM_QSTR(MP_QSTR_get_bitrate), MP_ROM_PTR(&mp3dec_get_bitrate_obj) },   // Add
+    { MP_ROM_QSTR(MP_QSTR_get_channels), MP_ROM_PTR(&mp3dec_get_channels_obj) }, // Add
 };
 static MP_DEFINE_CONST_DICT(mp3dec_locals_dict, mp3dec_locals_dict_table);
 

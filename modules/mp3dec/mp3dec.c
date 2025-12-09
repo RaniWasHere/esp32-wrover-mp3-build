@@ -46,7 +46,7 @@ static mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
     short * pcm = (short *)bufinfo.buf;
 
     // Read more data from file if we are running low (<1KB)
-    if (self->buf_valid < 1024) {
+    if (self->buf_valid < 2500) {
         // Move remaining data to start of buffer
         memmove(self->file_buf, self->file_buf + (self->file_buf_size - self->buf_valid), self->buf_valid);
         

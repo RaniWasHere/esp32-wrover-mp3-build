@@ -194,13 +194,13 @@ static mp_obj_t mp3dec_get_channels(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_channels_obj, mp3dec_get_channels);
 
-// --- Method: scan (Fast Forward) ---
+// --- Method: scan (Precision Version) ---
 static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t target_time_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     int start_offset = mp_obj_get_int(start_offset_in);
     float target_sec = mp_obj_get_float(target_time_in);
 
-    // 1. Reset file to audio start
+    // 1. Reset to Start
     mp_obj_t seek_args[3] = {
         mp_load_attr(self->stream, MP_QSTR_seek),
         mp_obj_new_int(start_offset),
@@ -212,12 +212,12 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
     self->buf_valid = 0;
     mp3dec_init(&self->mp3d);
     
-    double current_samples = 0;
-    double target_samples = -1.0; 
+    // We will track time exactly how 'decode' does
+    double scanned_time = 0.0;
 
     // 3. Fast Scan Loop
     while (1) {
-        // Refill Buffer
+        // A. Refill Buffer (Standard Logic)
         if (self->buf_valid < self->file_buf_size - 512) {
             size_t bytes_to_read = self->file_buf_size - self->buf_valid;
             if (self->buf_valid > 0) {
@@ -233,27 +233,32 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
             if (bytes_read == 0 && self->buf_valid == 0) break; // EOF
         }
 
-        // Fast Decode (NULL output skips synthesis for speed)
+        // B. Decode Frame Info Only (NULL output)
         int samples = mp3dec_decode_frame(&self->mp3d, self->file_buf, self->buf_valid, NULL, &self->info);
 
         if (samples > 0) {
-            if (target_samples < 0) target_samples = target_sec * self->info.hz;
-
-            // Check if reached target
-            if (current_samples >= target_samples) {
-                self->current_sec = (float)current_samples / (float)self->info.hz;
-                return mp_const_true; 
+            // C. Accumulate Time (Exact same math as decode)
+            if (self->info.hz > 0) {
+                double frame_dur = (double)samples / (double)self->info.hz;
+                
+                // CHECK TARGET BEFORE ADDING
+                // If adding this frame pushes us past target, we stop HERE.
+                // This leaves the current frame in the buffer, ready to be played.
+                if (scanned_time + frame_dur >= target_sec) {
+                    self->current_sec = (float)scanned_time;
+                    return mp_const_true; 
+                }
+                
+                scanned_time += frame_dur;
             }
 
-            current_samples += samples;
-            
-            // Consume
+            // D. Consume Bytes
             size_t consumed = self->info.frame_bytes;
             if (consumed > self->buf_valid) consumed = self->buf_valid;
             self->buf_valid -= consumed;
             memmove(self->file_buf, self->file_buf + consumed, self->buf_valid);
         } else {
-            // Skip garbage byte
+            // Skip garbage
             if (self->buf_valid > 0) {
                 self->buf_valid--;
                 memmove(self->file_buf, self->file_buf + 1, self->buf_valid);
@@ -262,6 +267,9 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
             }
         }
     }
+    
+    // If we reach EOF without hitting target, just set time to max
+    self->current_sec = (float)scanned_time;
     return mp_const_false;
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(mp3dec_scan_obj, mp3dec_scan);

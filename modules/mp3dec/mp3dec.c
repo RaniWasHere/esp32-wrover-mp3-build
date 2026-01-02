@@ -161,8 +161,23 @@ static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_tell_obj, mp3dec_tell);
 // --- Settings ---
 static mp_obj_t mp3dec_set_volume(mp_obj_t self_in, mp_obj_t vol_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    
+    // Debug print (View this in serial monitor)
+    printf("DEBUG: set_volume called. Self: %p\n", self);
+
+    if (self == NULL) {
+        printf("ERROR: Self is NULL\n");
+        return mp_const_none;
+    }
+
     int vol = mp_obj_get_int(vol_in);
-    self->volume = (vol < 0) ? 0 : (vol > 100 ? 100 : vol);
+    printf("DEBUG: Setting volume to %d\n", vol);
+
+    // Clamp volume
+    if (vol < 0) vol = 0;
+    if (vol > 100) vol = 100;
+    
+    self->volume = vol;
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_set_volume_obj, mp3dec_set_volume);

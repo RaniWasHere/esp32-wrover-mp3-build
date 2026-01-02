@@ -195,19 +195,29 @@ static mp_obj_t mp3dec_get_channels(mp_obj_t self_in) {
 static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_channels_obj, mp3dec_get_channels);
 
 // --- Method: scan (Precision Version) ---
-static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t target_time_in) {
-    mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    int start_offset = mp_obj_get_int(start_offset_in);
-    float target_sec = mp_obj_get_float(target_time_in);
+// Usage: decoder.scan(start_byte, start_time, target_time)
+static mp_obj_t mp3dec_scan(size_t n_args, const mp_obj_t *args) {
+    mp3dec_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+    int start_offset = mp_obj_get_int(args[1]);
+    float start_time = mp_obj_get_float(args[2]); // NEW ARG
+    float target_sec = mp_obj_get_float(args[3]);
 
-    // --- SMART SEEK LOGIC ---
     float scanned_time = self->current_sec;
+    bool perform_seek = false;
 
-    // Condition: If we are going BACKWARDS, we must rewind.
-    // Condition: If current time is garbage (0), we must rewind.
-    if (target_sec < scanned_time || scanned_time == 0.0f) {
-        
-        // 1. Seek Stream to Start
+    // DECISION LOGIC:
+    // 1. If going backwards (Target < Current), we MUST seek.
+    if (target_sec < scanned_time) perform_seek = true;
+    
+    // 2. If Python gave us a specific Checkpoint (start_time > 0), we MUST seek to it.
+    //    (Unless we are already past it and close to target, but relying on the checkpoint is safer)
+    if (start_time > 0.1f) perform_seek = true;
+    
+    // 3. If we are lost (Current == 0), we MUST seek.
+    if (scanned_time == 0.0f) perform_seek = true;
+
+    // EXECUTE SEEK
+    if (perform_seek) {
         mp_obj_t seek_args[3] = {
             mp_load_attr(self->stream, MP_QSTR_seek),
             mp_obj_new_int(start_offset),
@@ -215,17 +225,15 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
         };
         mp_call_method_n_kw(0, 0, seek_args);
 
-        // 2. Reset Decoder State
         self->buf_valid = 0;
         mp3dec_init(&self->mp3d);
-        scanned_time = 0.0f;
-    } 
-    // ELSE: We are going FORWARD. Do nothing! 
-    // We keep the buffer, keep the decoder state, and just enter the loop below.
+        
+        // CRITICAL FIX: Initialize time to the checkpoint time, not 0!
+        scanned_time = start_time;
+    }
 
-    // 3. Fast Scan Loop
+    // FAST SCAN LOOP
     while (1) {
-        // A. Refill Buffer (Standard Logic)
         if (self->buf_valid < self->file_buf_size - 512) {
             size_t bytes_to_read = self->file_buf_size - self->buf_valid;
             if (self->buf_valid > 0) {
@@ -241,22 +249,17 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
             if (bytes_read == 0 && self->buf_valid == 0) break; 
         }
 
-        // B. Decode Frame Info Only (NULL output)
         int samples = mp3dec_decode_frame(&self->mp3d, self->file_buf, self->buf_valid, NULL, &self->info);
 
         if (samples > 0) {
             if (self->info.hz > 0) {
                 float frame_dur = (float)samples / (float)self->info.hz;
-                
-                // Check if we hit the target
                 if (scanned_time + frame_dur >= target_sec) {
                     self->current_sec = scanned_time;
                     return mp_const_true; 
                 }
-                
                 scanned_time += frame_dur;
             }
-
             size_t consumed = self->info.frame_bytes;
             if (consumed > self->buf_valid) consumed = self->buf_valid;
             self->buf_valid -= consumed;
@@ -274,7 +277,8 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
     self->current_sec = scanned_time;
     return mp_const_false;
 }
-static MP_DEFINE_CONST_FUN_OBJ_3(mp3dec_scan_obj, mp3dec_scan);
+// CHANGED: Use MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN because we handle args manually now
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp3dec_scan_obj, 4, 4, mp3dec_scan);
 
 // --- Module Map ---
 static const mp_rom_map_elem_t mp3dec_locals_dict_table[] = {

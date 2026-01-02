@@ -194,14 +194,86 @@ static mp_obj_t mp3dec_get_channels(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_channels_obj, mp3dec_get_channels);
 
+// --- Method: scan (Fast Forward) ---
+static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t target_time_in) {
+    mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    int start_offset = mp_obj_get_int(start_offset_in);
+    float target_sec = mp_obj_get_float(target_time_in);
+
+    // 1. Reset file to audio start
+    mp_obj_t seek_args[3] = {
+        mp_load_attr(self->stream, MP_QSTR_seek),
+        mp_obj_new_int(start_offset),
+        mp_obj_new_int(0)
+    };
+    mp_call_method_n_kw(0, 0, seek_args);
+
+    // 2. Reset Decoder
+    self->buf_valid = 0;
+    mp3dec_init(&self->mp3d);
+    
+    double current_samples = 0;
+    double target_samples = -1.0; 
+
+    // 3. Fast Scan Loop
+    while (1) {
+        // Refill Buffer
+        if (self->buf_valid < self->file_buf_size - 512) {
+            size_t bytes_to_read = self->file_buf_size - self->buf_valid;
+            if (self->buf_valid > 0) {
+                memmove(self->file_buf, self->file_buf + (self->file_buf_size - bytes_to_read - self->buf_valid), self->buf_valid);
+            }
+            mp_obj_t read_method[2] = {
+                mp_load_attr(self->stream, MP_QSTR_readinto), 
+                mp_obj_new_bytearray_by_ref(bytes_to_read, self->file_buf + self->buf_valid)
+            };
+            mp_obj_t res = mp_call_method_n_kw(0, 0, read_method);
+            size_t bytes_read = mp_obj_get_int(res);
+            self->buf_valid += bytes_read;
+            if (bytes_read == 0 && self->buf_valid == 0) break; // EOF
+        }
+
+        // Fast Decode (NULL output skips synthesis for speed)
+        int samples = mp3dec_decode_frame(&self->mp3d, self->file_buf, self->buf_valid, NULL, &self->info);
+
+        if (samples > 0) {
+            if (target_samples < 0) target_samples = target_sec * self->info.hz;
+
+            // Check if reached target
+            if (current_samples >= target_samples) {
+                self->current_sec = (float)current_samples / (float)self->info.hz;
+                return mp_const_true; 
+            }
+
+            current_samples += samples;
+            
+            // Consume
+            size_t consumed = self->info.frame_bytes;
+            if (consumed > self->buf_valid) consumed = self->buf_valid;
+            self->buf_valid -= consumed;
+            memmove(self->file_buf, self->file_buf + consumed, self->buf_valid);
+        } else {
+            // Skip garbage byte
+            if (self->buf_valid > 0) {
+                self->buf_valid--;
+                memmove(self->file_buf, self->file_buf + 1, self->buf_valid);
+            } else {
+                break;
+            }
+        }
+    }
+    return mp_const_false;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(mp3dec_scan_obj, mp3dec_scan);
 
 // --- Module Map ---
 static const mp_rom_map_elem_t mp3dec_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_decode), MP_ROM_PTR(&mp3dec_decode_obj) },
-    { MP_ROM_QSTR(MP_QSTR_seek), MP_ROM_PTR(&mp3dec_seek_obj) },        // New
-    { MP_ROM_QSTR(MP_QSTR_tell), MP_ROM_PTR(&mp3dec_tell_obj) },        // New
+    { MP_ROM_QSTR(MP_QSTR_scan), MP_ROM_PTR(&mp3dec_scan_obj) },    // <--- Added this
+    { MP_ROM_QSTR(MP_QSTR_seek), MP_ROM_PTR(&mp3dec_seek_obj) },
+    { MP_ROM_QSTR(MP_QSTR_tell), MP_ROM_PTR(&mp3dec_tell_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_volume), MP_ROM_PTR(&mp3dec_set_volume_obj) },
-    { MP_ROM_QSTR(MP_QSTR_set_mono), MP_ROM_PTR(&mp3dec_set_mono_obj) }, // New
+    { MP_ROM_QSTR(MP_QSTR_set_mono), MP_ROM_PTR(&mp3dec_set_mono_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_sample_rate), MP_ROM_PTR(&mp3dec_get_sample_rate_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_bitrate), MP_ROM_PTR(&mp3dec_get_bitrate_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_channels), MP_ROM_PTR(&mp3dec_get_channels_obj) },

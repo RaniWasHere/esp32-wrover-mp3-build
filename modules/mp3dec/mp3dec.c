@@ -5,6 +5,7 @@
 #include "py/stream.h"
 #include <string.h>
 
+// --- Object Structure ---
 typedef struct _mp3dec_obj_t {
     mp_obj_base_t base;
     mp3dec_t mp3d;
@@ -14,23 +15,32 @@ typedef struct _mp3dec_obj_t {
     size_t file_buf_size;
     size_t buf_valid;
     int volume;
+    float current_sec; // Track playback time
+    bool force_mono;   // New: Force stereo to mono mix
 } mp3dec_obj_t;
 
 const mp_obj_type_t mp3dec_type;
 
 // --- Constructor ---
+// Usage: MP3Decoder(stream, buf_size=8192)
 static mp_obj_t mp3dec_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
-    mp_arg_check_num(n_args, n_kw, 1, 1, false);
+    mp_arg_check_num(n_args, n_kw, 1, 2, false); // Allow 1 or 2 args
+    
     mp3dec_obj_t *self = m_new_obj(mp3dec_obj_t);
     self->base.type = &mp3dec_type;
     
     mp3dec_init(&self->mp3d);
     self->stream = args[0];
     
-    self->file_buf_size = 8192;
+    // Configurable buffer size (Default 8KB)
+    self->file_buf_size = (n_args > 1) ? mp_obj_get_int(args[1]) : 8192;
+    if (self->file_buf_size < 1024) self->file_buf_size = 1024; // Safety minimum
+    
     self->file_buf = m_new(uint8_t, self->file_buf_size);
     self->buf_valid = 0;
     self->volume = 100;
+    self->current_sec = 0.0f;
+    self->force_mono = false;
 
     return MP_OBJ_FROM_PTR(self);
 }
@@ -44,11 +54,16 @@ static mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
     short * pcm = (short *)bufinfo.buf;
 
     while (1) {
-        if (self->buf_valid < self->file_buf_size - 512) {
+        // 1. Refill Buffer if needed
+        if (self->buf_valid < self->file_buf_size - 512) { // 512 is safe margin for headers
             size_t bytes_to_read = self->file_buf_size - self->buf_valid;
+            
+            // Shift remaining data to start
             if (self->buf_valid > 0) {
                 memmove(self->file_buf, self->file_buf + (self->file_buf_size - bytes_to_read - self->buf_valid), self->buf_valid);
             }
+            
+            // Read from Python Stream
             mp_obj_t read_method[2] = {
                 mp_load_attr(self->stream, MP_QSTR_readinto), 
                 mp_obj_new_bytearray_by_ref(bytes_to_read, self->file_buf + self->buf_valid)
@@ -56,58 +71,122 @@ static mp_obj_t mp3dec_decode(mp_obj_t self_in, mp_obj_t out_buf_in) {
             mp_obj_t res = mp_call_method_n_kw(0, 0, read_method);
             size_t bytes_read = mp_obj_get_int(res);
             self->buf_valid += bytes_read;
+            
+            // End of File
             if (bytes_read == 0 && self->buf_valid == 0) return MP_OBJ_NEW_SMALL_INT(0); 
         }
 
+        // 2. Decode Frame
         int samples = mp3dec_decode_frame(&self->mp3d, self->file_buf, self->buf_valid, pcm, &self->info);
         
+        // 3. Consume Bytes
         size_t consumed = self->info.frame_bytes;
+        if (consumed == 0) consumed = 1; // Prevent infinite loop on bad data
+        if (consumed > self->buf_valid) consumed = self->buf_valid; // Safety
+
         self->buf_valid -= consumed;
         memmove(self->file_buf, self->file_buf + consumed, self->buf_valid);
 
         if (samples > 0) {
-            // Apply Volume
-            if (self->volume < 100) {
-                int total_samples = samples * self->info.channels;
-                for (int i = 0; i < total_samples; i++) {
-                    int32_t val = (int32_t)pcm[i] * self->volume / 100;
-                    pcm[i] = (short)val;
+            // Update internal timer
+            if (self->info.hz > 0) {
+                self->current_sec += (float)samples / (float)self->info.hz;
+            }
+
+            int output_samples = samples * self->info.channels;
+
+            // 4. Post-Processing: Volume & Mono Mixing
+            // Optimization: Combine loops if volume != 100
+            if (self->force_mono && self->info.channels == 2) {
+                // Mix Stereo -> Mono (Average L+R)
+                for (int i = 0; i < samples; i++) {
+                    int32_t mixed = ((int32_t)pcm[i*2] + (int32_t)pcm[i*2+1]) / 2;
+                    if (self->volume < 100) mixed = mixed * self->volume / 100;
+                    pcm[i] = (short)mixed; // Store continuously
+                }
+                return MP_OBJ_NEW_SMALL_INT(samples * 2); // Return bytes (samples * 1 channel * 2 bytes)
+            } 
+            else if (self->volume < 100) {
+                // Just Volume
+                for (int i = 0; i < output_samples; i++) {
+                    pcm[i] = (short)((int32_t)pcm[i] * self->volume / 100);
                 }
             }
-            return MP_OBJ_NEW_SMALL_INT(samples * self->info.channels * 2);
+
+            // Return number of bytes written to PCM buffer
+            // (Samples * Channels * 2 bytes_per_short)
+            return MP_OBJ_NEW_SMALL_INT(output_samples * 2);
         }
     }
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_decode_obj, mp3dec_decode);
 
-// --- Volume Control ---
+// --- Method: seek ---
+// Allows jumping to a specific second. Warning: For VBR files this is an approximation.
+static mp_obj_t mp3dec_seek(mp_obj_t self_in, mp_obj_t time_sec_in) {
+    mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    float target_sec = mp_obj_get_float(time_sec_in);
+    
+    if (self->info.bitrate_kbps == 0) return mp_const_false; // Cannot seek yet, haven't decoded header
+
+    // Calculate approximate byte offset
+    // bytes = seconds * (kbits/sec * 1000 / 8 bits/byte)
+    int offset = (int)(target_sec * (self->info.bitrate_kbps * 125));
+
+    // Call stream.seek(offset)
+    mp_obj_t seek_method[3] = {
+        mp_load_attr(self->stream, MP_QSTR_seek),
+        mp_obj_new_int(offset),
+        mp_obj_new_int(0) // 0 = SEEK_SET (absolute)
+    };
+    mp_call_method_n_kw(0, 0, seek_method);
+
+    // CRITICAL: Flush internal buffers so we don't play old data
+    self->buf_valid = 0;
+    mp3dec_init(&self->mp3d); // Reset decoder state
+    self->current_sec = target_sec;
+
+    return mp_const_true;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_seek_obj, mp3dec_seek);
+
+// --- Method: tell ---
+// Returns current playback position in seconds
+static mp_obj_t mp3dec_tell(mp_obj_t self_in) {
+    mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    return mp_obj_new_float(self->current_sec);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_tell_obj, mp3dec_tell);
+
+// --- Settings ---
 static mp_obj_t mp3dec_set_volume(mp_obj_t self_in, mp_obj_t vol_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     int vol = mp_obj_get_int(vol_in);
-    if (vol < 0) vol = 0;
-    if (vol > 100) vol = 100;
-    self->volume = vol;
+    self->volume = (vol < 0) ? 0 : (vol > 100 ? 100 : vol);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_set_volume_obj, mp3dec_set_volume);
 
-// --- METADATA GETTERS ---
+static mp_obj_t mp3dec_set_mono(mp_obj_t self_in, mp_obj_t enable_in) {
+    mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    self->force_mono = mp_obj_is_true(enable_in);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_set_mono_obj, mp3dec_set_mono);
 
-// 1. Get Hz
+// --- Getters ---
 static mp_obj_t mp3dec_get_sample_rate(mp_obj_t self_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     return MP_OBJ_NEW_SMALL_INT(self->info.hz);
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_sample_rate_obj, mp3dec_get_sample_rate);
 
-// 2. Get Bitrate (kbps) - NEW!
 static mp_obj_t mp3dec_get_bitrate(mp_obj_t self_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     return MP_OBJ_NEW_SMALL_INT(self->info.bitrate_kbps);
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_bitrate_obj, mp3dec_get_bitrate);
 
-// 3. Get Channels - NEW!
 static mp_obj_t mp3dec_get_channels(mp_obj_t self_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
     return MP_OBJ_NEW_SMALL_INT(self->info.channels);
@@ -115,13 +194,16 @@ static mp_obj_t mp3dec_get_channels(mp_obj_t self_in) {
 static MP_DEFINE_CONST_FUN_OBJ_1(mp3dec_get_channels_obj, mp3dec_get_channels);
 
 
-// --- Module Definitions ---
+// --- Module Map ---
 static const mp_rom_map_elem_t mp3dec_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_decode), MP_ROM_PTR(&mp3dec_decode_obj) },
+    { MP_ROM_QSTR(MP_QSTR_seek), MP_ROM_PTR(&mp3dec_seek_obj) },        // New
+    { MP_ROM_QSTR(MP_QSTR_tell), MP_ROM_PTR(&mp3dec_tell_obj) },        // New
     { MP_ROM_QSTR(MP_QSTR_set_volume), MP_ROM_PTR(&mp3dec_set_volume_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_mono), MP_ROM_PTR(&mp3dec_set_mono_obj) }, // New
     { MP_ROM_QSTR(MP_QSTR_get_sample_rate), MP_ROM_PTR(&mp3dec_get_sample_rate_obj) },
-    { MP_ROM_QSTR(MP_QSTR_get_bitrate), MP_ROM_PTR(&mp3dec_get_bitrate_obj) },   // Add
-    { MP_ROM_QSTR(MP_QSTR_get_channels), MP_ROM_PTR(&mp3dec_get_channels_obj) }, // Add
+    { MP_ROM_QSTR(MP_QSTR_get_bitrate), MP_ROM_PTR(&mp3dec_get_bitrate_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_channels), MP_ROM_PTR(&mp3dec_get_channels_obj) },
 };
 static MP_DEFINE_CONST_DICT(mp3dec_locals_dict, mp3dec_locals_dict_table);
 

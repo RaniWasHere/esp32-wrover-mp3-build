@@ -212,12 +212,12 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
     self->buf_valid = 0;
     mp3dec_init(&self->mp3d);
     
-    // We will track time exactly how 'decode' does
-    double scanned_time = 0.0;
+    // CHANGE: Use float to intentionally match the precision drift of the playback loop
+    float scanned_time = 0.0f; 
 
     // 3. Fast Scan Loop
     while (1) {
-        // A. Refill Buffer (Standard Logic)
+        // A. Refill Buffer
         if (self->buf_valid < self->file_buf_size - 512) {
             size_t bytes_to_read = self->file_buf_size - self->buf_valid;
             if (self->buf_valid > 0) {
@@ -230,35 +230,29 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
             mp_obj_t res = mp_call_method_n_kw(0, 0, read_method);
             size_t bytes_read = mp_obj_get_int(res);
             self->buf_valid += bytes_read;
-            if (bytes_read == 0 && self->buf_valid == 0) break; // EOF
+            if (bytes_read == 0 && self->buf_valid == 0) break; 
         }
 
-        // B. Decode Frame Info Only (NULL output)
+        // B. Decode Frame Info
         int samples = mp3dec_decode_frame(&self->mp3d, self->file_buf, self->buf_valid, NULL, &self->info);
 
         if (samples > 0) {
-            // C. Accumulate Time (Exact same math as decode)
             if (self->info.hz > 0) {
-                double frame_dur = (double)samples / (double)self->info.hz;
+                // CHANGE: Use float math
+                float frame_dur = (float)samples / (float)self->info.hz;
                 
-                // CHECK TARGET BEFORE ADDING
-                // If adding this frame pushes us past target, we stop HERE.
-                // This leaves the current frame in the buffer, ready to be played.
                 if (scanned_time + frame_dur >= target_sec) {
-                    self->current_sec = (float)scanned_time;
+                    self->current_sec = scanned_time;
                     return mp_const_true; 
                 }
-                
                 scanned_time += frame_dur;
             }
 
-            // D. Consume Bytes
             size_t consumed = self->info.frame_bytes;
             if (consumed > self->buf_valid) consumed = self->buf_valid;
             self->buf_valid -= consumed;
             memmove(self->file_buf, self->file_buf + consumed, self->buf_valid);
         } else {
-            // Skip garbage
             if (self->buf_valid > 0) {
                 self->buf_valid--;
                 memmove(self->file_buf, self->file_buf + 1, self->buf_valid);
@@ -268,8 +262,7 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
         }
     }
     
-    // If we reach EOF without hitting target, just set time to max
-    self->current_sec = (float)scanned_time;
+    self->current_sec = scanned_time;
     return mp_const_false;
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(mp3dec_scan_obj, mp3dec_scan);

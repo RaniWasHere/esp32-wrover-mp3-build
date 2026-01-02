@@ -200,24 +200,32 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
     int start_offset = mp_obj_get_int(start_offset_in);
     float target_sec = mp_obj_get_float(target_time_in);
 
-    // 1. Reset to Start
-    mp_obj_t seek_args[3] = {
-        mp_load_attr(self->stream, MP_QSTR_seek),
-        mp_obj_new_int(start_offset),
-        mp_obj_new_int(0)
-    };
-    mp_call_method_n_kw(0, 0, seek_args);
+    // --- SMART SEEK LOGIC ---
+    float scanned_time = self->current_sec;
 
-    // 2. Reset Decoder
-    self->buf_valid = 0;
-    mp3dec_init(&self->mp3d);
-    
-    // CHANGE: Use float to intentionally match the precision drift of the playback loop
-    float scanned_time = 0.0f; 
+    // Condition: If we are going BACKWARDS, we must rewind.
+    // Condition: If current time is garbage (0), we must rewind.
+    if (target_sec < scanned_time || scanned_time == 0.0f) {
+        
+        // 1. Seek Stream to Start
+        mp_obj_t seek_args[3] = {
+            mp_load_attr(self->stream, MP_QSTR_seek),
+            mp_obj_new_int(start_offset),
+            mp_obj_new_int(0)
+        };
+        mp_call_method_n_kw(0, 0, seek_args);
+
+        // 2. Reset Decoder State
+        self->buf_valid = 0;
+        mp3dec_init(&self->mp3d);
+        scanned_time = 0.0f;
+    } 
+    // ELSE: We are going FORWARD. Do nothing! 
+    // We keep the buffer, keep the decoder state, and just enter the loop below.
 
     // 3. Fast Scan Loop
     while (1) {
-        // A. Refill Buffer
+        // A. Refill Buffer (Standard Logic)
         if (self->buf_valid < self->file_buf_size - 512) {
             size_t bytes_to_read = self->file_buf_size - self->buf_valid;
             if (self->buf_valid > 0) {
@@ -233,18 +241,19 @@ static mp_obj_t mp3dec_scan(mp_obj_t self_in, mp_obj_t start_offset_in, mp_obj_t
             if (bytes_read == 0 && self->buf_valid == 0) break; 
         }
 
-        // B. Decode Frame Info
+        // B. Decode Frame Info Only (NULL output)
         int samples = mp3dec_decode_frame(&self->mp3d, self->file_buf, self->buf_valid, NULL, &self->info);
 
         if (samples > 0) {
             if (self->info.hz > 0) {
-                // CHANGE: Use float math
                 float frame_dur = (float)samples / (float)self->info.hz;
                 
+                // Check if we hit the target
                 if (scanned_time + frame_dur >= target_sec) {
                     self->current_sec = scanned_time;
                     return mp_const_true; 
                 }
+                
                 scanned_time += frame_dur;
             }
 

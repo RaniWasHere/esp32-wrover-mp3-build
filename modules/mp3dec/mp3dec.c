@@ -123,17 +123,14 @@ static MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_decode_obj, mp3dec_decode);
 
 // --- Method: seek ---
 // Allows jumping to a specific second. Warning: For VBR files this is an approximation.
-static mp_obj_t mp3dec_seek(mp_obj_t self_in, mp_obj_t time_sec_in) {
+// Python does the math; C just executes the move.
+static mp_obj_t mp3dec_seek(mp_obj_t self_in, mp_obj_t byte_offset_in, mp_obj_t time_sec_in) {
     mp3dec_obj_t *self = MP_OBJ_TO_PTR(self_in);
-    float target_sec = mp_obj_get_float(time_sec_in);
     
-    if (self->info.bitrate_kbps == 0) return mp_const_false; // Cannot seek yet, haven't decoded header
+    int offset = mp_obj_get_int(byte_offset_in);
+    float new_time = mp_obj_get_float(time_sec_in);
 
-    // Calculate approximate byte offset
-    // bytes = seconds * (kbits/sec * 1000 / 8 bits/byte)
-    int offset = (int)(target_sec * (self->info.bitrate_kbps * 125));
-
-    // Call stream.seek(offset)
+    // 1. Call Python stream.seek(offset)
     mp_obj_t seek_method[3] = {
         mp_load_attr(self->stream, MP_QSTR_seek),
         mp_obj_new_int(offset),
@@ -141,14 +138,17 @@ static mp_obj_t mp3dec_seek(mp_obj_t self_in, mp_obj_t time_sec_in) {
     };
     mp_call_method_n_kw(0, 0, seek_method);
 
-    // CRITICAL: Flush internal buffers so we don't play old data
+    // 2. Reset Decoder State
+    // We must flush internal buffers so we don't play old data
     self->buf_valid = 0;
-    mp3dec_init(&self->mp3d); // Reset decoder state
-    self->current_sec = target_sec;
+    mp3dec_init(&self->mp3d); 
+    
+    // 3. Update the internal timer to what Python told us
+    self->current_sec = new_time;
 
     return mp_const_true;
 }
-static MP_DEFINE_CONST_FUN_OBJ_2(mp3dec_seek_obj, mp3dec_seek);
+static MP_DEFINE_CONST_FUN_OBJ_3(mp3dec_seek_obj, mp3dec_seek);
 
 // --- Method: tell ---
 // Returns current playback position in seconds
